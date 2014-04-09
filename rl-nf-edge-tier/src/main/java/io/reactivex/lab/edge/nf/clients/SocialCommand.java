@@ -1,24 +1,17 @@
 package io.reactivex.lab.edge.nf.clients;
 
-import io.netty.buffer.ByteBuf;
+import com.netflix.hystrix.HystrixCommandGroupKey;
 import io.reactivex.lab.edge.common.SimpleJson;
 import io.reactivex.lab.edge.nf.clients.SocialCommand.Social;
 import io.reactivex.lab.edge.nf.clients.UserCommand.User;
-import io.reactivex.netty.RxNetty;
-import io.reactivex.netty.pipeline.PipelineConfigurators;
 import io.reactivex.netty.protocol.http.client.HttpClientRequest;
-import io.reactivex.netty.protocol.http.client.HttpClientResponse;
+import rx.Observable;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import rx.Observable;
-
-import com.netflix.hystrix.HystrixCommandGroupKey;
-import com.netflix.hystrix.HystrixObservableCommand;
-
-public class SocialCommand extends HystrixObservableCommand<Social> {
+public class SocialCommand extends AbstractHystrixCommand<Social> {
 
     private final List<User> users;
 
@@ -34,7 +27,7 @@ public class SocialCommand extends HystrixObservableCommand<Social> {
 
     @Override
     protected Observable<Social> run() {
-        return RxNetty.createHttpClient("localhost", 9194, PipelineConfigurators.<ByteBuf> sseClientConfigurator())
+        return newClient("localhost", 9194)
                 .submit(HttpClientRequest.createGet("/social?" + UrlGenerator.generate("userId", users)))
                 .flatMap(r -> {
                     Observable<Social> bytesToJson = r.getContent().map(sse -> {

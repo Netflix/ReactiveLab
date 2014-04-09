@@ -12,6 +12,9 @@ import java.util.concurrent.TimeUnit;
 
 import rx.Observable;
 import rx.Subscriber;
+import rx.functions.Action0;
+import rx.functions.Action1;
+import rx.functions.Func1;
 import rx.subscriptions.Subscriptions;
 
 import com.netflix.hystrix.contrib.metrics.eventstream.HystrixMetricsPoller;
@@ -49,38 +52,62 @@ public class EdgeServer {
         RxNetty.createHttpServer(9999, (request, response) -> {
             System.out.println("Start Hystrix Stream");
             response.getHeaders().add("content-type", "text/event-stream");
-            return Observable.create((Subscriber<? super Void> s) -> {
-                s.add(streamPoller.subscribe(json -> {
-                    response.writeAndFlush(new ServerSentEvent("", "data", json));
-                }, error -> {
-                    s.onError(error);
-                }));
+            return Observable.create(new Observable.OnSubscribe<Void>() {
+                @Override
+                public void call(Subscriber<? super Void> s) {
+                    s.add(streamPoller.subscribe(json -> {
+                        response.writeAndFlush(new ServerSentEvent("", "data", json));
+                    }, new Action1<Throwable>() {
+                        @Override
+                        public void call(Throwable error) {
+                            s.onError(error);
+                        }
+                    }));
 
-                s.add(Observable.interval(1000, TimeUnit.MILLISECONDS).flatMap(n -> {
-                    return response.writeAndFlush(new ServerSentEvent("", "ping", ""))
-                            .onErrorReturn(e -> {
-                                System.out.println("Connection closed, unsubscribing from Hystrix Stream");
-                                s.unsubscribe();
-                                return null;
-                            });
-                }).subscribe());
+                    s.add(Observable.interval(1000, TimeUnit.MILLISECONDS).flatMap(
+                            new Func1<Long, Observable<? extends Void>>() {
+                                @Override
+                                public Observable<? extends Void> call(Long n) {
+                                    return response.writeAndFlush(new ServerSentEvent("", "ping", ""))
+                                                   .onErrorReturn(new Func1<Throwable, Void>() {
+                                                       @Override
+                                                       public Void call(Throwable e) {
+                                                           System.out.println(
+                                                                   "Connection closed, unsubscribing from Hystrix Stream");
+                                                           s.unsubscribe();
+                                                           return null;
+                                                       }
+                                                   });
+                                }
+                            }).subscribe());
+                }
             });
         }, PipelineConfigurators.<ByteBuf> sseServerConfigurator()).start();
     }
 
-    final static Observable<String> streamPoller = Observable.create((Subscriber<? super String> s) -> {
-        try {
-            System.out.println("Start Hystrix Metric Poller");
-            HystrixMetricsPoller poller = new HystrixMetricsPoller(json -> {
-                s.onNext(json);
-            }, 1000);
-            s.add(Subscriptions.create(() -> {
-                System.out.println("Shutdown Hystrix Stream");
-                poller.shutdown();
-            }));
-            poller.start();
-        } catch (Exception e) {
-            s.onError(e);
+    final static Observable<String> streamPoller = Observable.create(new Observable.OnSubscribe<String>() {
+        @Override
+        public void call(Subscriber<? super String> s) {
+            try {
+                System.out.println("Start Hystrix Metric Poller");
+                HystrixMetricsPoller poller = new HystrixMetricsPoller(
+                        new HystrixMetricsPoller.MetricsAsJsonPollerListener() {
+                            @Override
+                            public void handleJsonMetric(String json) {
+                                s.onNext(json);
+                            }
+                        }, 1000);
+                s.add(Subscriptions.create(new Action0() {
+                    @Override
+                    public void call() {
+                        System.out.println("Shutdown Hystrix Stream");
+                        poller.shutdown();
+                    }
+                }));
+                poller.start();
+            } catch (Exception e) {
+                s.onError(e);
+            }
         }
     }).publish().refCount();
 
