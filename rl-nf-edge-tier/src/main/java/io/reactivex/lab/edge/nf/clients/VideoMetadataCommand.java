@@ -1,23 +1,17 @@
 package io.reactivex.lab.edge.nf.clients;
 
-import io.netty.buffer.ByteBuf;
+import com.netflix.hystrix.HystrixCommandGroupKey;
 import io.reactivex.lab.edge.common.SimpleJson;
 import io.reactivex.lab.edge.nf.clients.PersonalizedCatalogCommand.Video;
 import io.reactivex.lab.edge.nf.clients.VideoMetadataCommand.VideoMetadata;
-import io.reactivex.netty.RxNetty;
-import io.reactivex.netty.pipeline.PipelineConfigurators;
 import io.reactivex.netty.protocol.http.client.HttpClientRequest;
+import rx.Observable;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import rx.Observable;
-
-import com.netflix.hystrix.HystrixCommandGroupKey;
-import com.netflix.hystrix.HystrixObservableCommand;
-
-public class VideoMetadataCommand extends HystrixObservableCommand<VideoMetadata> {
+public class VideoMetadataCommand extends AbstractHystrixCommand<VideoMetadata> {
 
     private final List<Video> videos;
 
@@ -33,7 +27,7 @@ public class VideoMetadataCommand extends HystrixObservableCommand<VideoMetadata
 
     @Override
     protected Observable<VideoMetadata> run() {
-        return RxNetty.createHttpClient("localhost", 9196, PipelineConfigurators.<ByteBuf> sseClientConfigurator())
+        return newClient("localhost", 9196)
                 .submit(HttpClientRequest.createGet("/metadata?" + UrlGenerator.generate("videoId", videos)))
                 .flatMap(r -> {
                     Observable<VideoMetadata> bytesToJson = r.getContent().map(sse -> {

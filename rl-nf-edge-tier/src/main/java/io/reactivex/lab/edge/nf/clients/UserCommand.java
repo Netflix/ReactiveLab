@@ -1,21 +1,15 @@
 package io.reactivex.lab.edge.nf.clients;
 
-import io.netty.buffer.ByteBuf;
+import com.netflix.hystrix.HystrixCommandGroupKey;
 import io.reactivex.lab.edge.common.SimpleJson;
 import io.reactivex.lab.edge.nf.clients.UserCommand.User;
-import io.reactivex.netty.RxNetty;
-import io.reactivex.netty.pipeline.PipelineConfigurators;
 import io.reactivex.netty.protocol.http.client.HttpClientRequest;
+import rx.Observable;
 
 import java.util.List;
 import java.util.Map;
 
-import rx.Observable;
-
-import com.netflix.hystrix.HystrixCommandGroupKey;
-import com.netflix.hystrix.HystrixObservableCommand;
-
-public class UserCommand extends HystrixObservableCommand<User> {
+public class UserCommand extends AbstractHystrixCommand<User> {
 
     private final List<String> userIds;
 
@@ -26,7 +20,7 @@ public class UserCommand extends HystrixObservableCommand<User> {
 
     @Override
     protected Observable<User> run() {
-        return RxNetty.createHttpClient("localhost", 9195, PipelineConfigurators.<ByteBuf> sseClientConfigurator())
+        return newClient("localhost", 9195)
                 .submit(HttpClientRequest.createGet("/user?" + UrlGenerator.generate("userId", userIds)))
                 .flatMap(r -> {
                     Observable<User> user = r.getContent().map(sse -> {

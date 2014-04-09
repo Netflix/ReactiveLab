@@ -1,23 +1,17 @@
 package io.reactivex.lab.edge.nf.clients;
 
-import io.netty.buffer.ByteBuf;
+import com.netflix.hystrix.HystrixCommandGroupKey;
 import io.reactivex.lab.edge.common.SimpleJson;
 import io.reactivex.lab.edge.nf.clients.BookmarksCommand.Bookmark;
 import io.reactivex.lab.edge.nf.clients.PersonalizedCatalogCommand.Video;
-import io.reactivex.netty.RxNetty;
-import io.reactivex.netty.pipeline.PipelineConfigurators;
 import io.reactivex.netty.protocol.http.client.HttpClientRequest;
+import rx.Observable;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import rx.Observable;
-
-import com.netflix.hystrix.HystrixCommandGroupKey;
-import com.netflix.hystrix.HystrixObservableCommand;
-
-public class BookmarksCommand extends HystrixObservableCommand<Bookmark> {
+public class BookmarksCommand extends AbstractHystrixCommand<Bookmark> {
 
     final List<Video> videos;
 
@@ -33,7 +27,7 @@ public class BookmarksCommand extends HystrixObservableCommand<Bookmark> {
 
     @Override
     protected Observable<Bookmark> run() {
-        return RxNetty.createHttpClient("localhost", 9190, PipelineConfigurators.<ByteBuf> sseClientConfigurator())
+        return newClient("localhost", 9190)
                 .submit(HttpClientRequest.createGet("/bookmarks?" + UrlGenerator.generate("videoId", videos)))
                 .flatMap(r -> {
                     Observable<Bookmark> bytesToJson = r.getContent().map(sse -> {
