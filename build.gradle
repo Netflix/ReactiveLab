@@ -1,31 +1,18 @@
+plugins {
+    id 'nebula.netflixoss' version '2.2.9'
+}
+
 ext.githubProjectName = 'ReactiveLab'
 
-//apply from: file('gradle/convention.gradle')
-apply from: file('gradle/maven.gradle')
-
-buildscript {
-    repositories {
-        mavenLocal()
-        mavenCentral()
-        jcenter()
-    }
-
-    apply from: file('gradle/buildscript.gradle'), to: buildscript
-}
-
-allprojects {
-    apply plugin: 'eclipse'
-    apply plugin: 'idea'
-    repositories { 
-        mavenLocal()
-        mavenCentral()
-	    jcenter()
-    }
-}
-
 subprojects {
+    apply plugin: 'nebula.netflixoss'
     apply plugin: 'java'
     group = "io.reactivex.lab"
+
+    repositories {
+        mavenLocal()
+        jcenter()
+    }
 }
 
 task startDiscovery() {}
