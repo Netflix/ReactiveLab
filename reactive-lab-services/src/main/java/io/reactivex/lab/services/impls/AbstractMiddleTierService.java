@@ -1,106 +1,96 @@
 package io.reactivex.lab.services.impls;
 
+import com.netflix.eureka2.client.EurekaInterestClient;
+import com.netflix.eureka2.client.EurekaRegistrationClient;
+import com.netflix.eureka2.client.registration.RegistrationObservable;
+import com.netflix.eureka2.registry.datacenter.BasicDataCenterInfo;
+import com.netflix.eureka2.registry.instance.InstanceInfo;
+import com.netflix.eureka2.registry.instance.ServicePort;
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.logging.LogLevel;
 import io.reactivex.lab.services.metrics.HystrixMetricsStreamHandler;
 import io.reactivex.lab.services.metrics.Metrics;
-import io.reactivex.netty.RxNetty;
-import io.reactivex.netty.pipeline.PipelineConfigurators;
 import io.reactivex.netty.protocol.http.server.HttpServer;
 import io.reactivex.netty.protocol.http.server.HttpServerRequest;
 import io.reactivex.netty.protocol.http.server.HttpServerResponse;
-import io.reactivex.netty.protocol.http.sse.ServerSentEvent;
+import rx.Observable;
+import rx.Subscription;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.UUID;
-
-import rx.Observable;
-
-import com.netflix.eureka2.client.EurekaClient;
-import com.netflix.eureka2.registry.InstanceInfo;
-import com.netflix.eureka2.registry.ServicePort;
-import com.netflix.eureka2.registry.datacenter.BasicDataCenterInfo;
 
 /**
  * Common base for the service impls
  */
 public abstract class AbstractMiddleTierService {
 
-    private EurekaClient client;
-    private HttpServer<ByteBuf, ServerSentEvent> server;
+    private HttpServer<ByteBuf, ByteBuf> server;
     protected final String eurekaVipAddress;
+    protected final EurekaInterestClient interestClient;
+    protected final EurekaRegistrationClient registrationClient;
     private final Metrics metrics;
+    private Subscription registrationSubscription;
 
-    protected AbstractMiddleTierService(String eurekaVipAddress, EurekaClient client) {
+    protected AbstractMiddleTierService(String eurekaVipAddress, EurekaRegistrationClient registrationClient) {
+        this(eurekaVipAddress, null, registrationClient);
+    }
+
+    protected AbstractMiddleTierService(String eurekaVipAddress, EurekaInterestClient interestClient,
+                                        EurekaRegistrationClient registrationClient) {
         this.eurekaVipAddress = eurekaVipAddress;
-        this.client = client;
+        this.interestClient = interestClient;
+        this.registrationClient = registrationClient;
         this.metrics = new Metrics(eurekaVipAddress);
     }
 
-    public HttpServer<ByteBuf, ServerSentEvent> createServer(int port) {
+    private HttpServer<ByteBuf, ByteBuf> startServer(int port) {
         System.out.println("Start " + getClass().getSimpleName() + " on port: " + port);
 
         // declare handler chain (wrapped in Hystrix)
-        // TODO create a better way of chaining these (related https://github.com/ReactiveX/RxNetty/issues/232 and https://github.com/ReactiveX/RxNetty/issues/202)
-        HystrixMetricsStreamHandler<ByteBuf, ServerSentEvent> handlerChain 
-          = new HystrixMetricsStreamHandler<>(metrics, "/hystrix.stream", 1000, (request, response) -> {
+        HystrixMetricsStreamHandler handlerChain
+          = new HystrixMetricsStreamHandler(metrics, "/hystrix.stream", 1000, (request, response) -> {
             try {
                 long startTime = System.currentTimeMillis();
                 return handleRequest(request, response)
-                        .doOnCompleted(() -> System.out.println("Response => " + request.getPath() + " Time => " + (int) (System.currentTimeMillis() - startTime) + "ms"))
-                        .doOnCompleted(() -> metrics.getRollingPercentile().addValue((int) (System.currentTimeMillis() - startTime)))
+                        .doOnCompleted(() -> metrics.getRollingPercentile()
+                                                    .addValue((int) (System.currentTimeMillis() - startTime)))
                         .doOnCompleted(() -> metrics.getRollingNumber().add(Metrics.EventType.SUCCESS, 1))
                         .doOnError(t -> metrics.getRollingNumber().add(Metrics.EventType.FAILURE, 1));
             } catch (Throwable e) {
                 e.printStackTrace();
-                System.err.println("Server => Error [" + request.getPath() + "] => " + e);
+                System.err.println("Server => Error [" + request.getUri() + "] => " + e);
                 response.setStatus(HttpResponseStatus.BAD_REQUEST);
-                return response.writeStringAndFlush("data: Error 500: Bad Request\n" + e.getMessage() + "\n");
+                return response.writeString(Observable.just("data: Error 500: Bad Request\n" + e.getMessage() + "\n"));
             }
         });
 
-        return RxNetty.createHttpServer(port, (request, response) -> {
-            // System.out.println("Server => Request: " + request.getPath());
-                return handlerChain.handle(request, response);
-            }, PipelineConfigurators.<ByteBuf> serveSseConfigurator());
+        return HttpServer.newServer(port).enableWireLogging(LogLevel.ERROR).start(handlerChain::handle);
     }
 
     public void start(int port) {
-        server = createServer(port);
-        server.start();
-        client.register(createInstanceInfo(port)).toBlocking().lastOrDefault(null);
+        server = startServer(port);
+        InstanceInfo instanceInfo = createInstanceInfo(port);
+        RegistrationObservable registrationObservable = registrationClient.register(Observable.just(instanceInfo));
+        registrationSubscription = registrationObservable.subscribe();
+        registrationObservable.initialRegistrationResult().toBlocking().firstOrDefault(null);
     }
 
-    public void startAndWait(int port) {
-        start(port);
-        try {
-            server.waitTillShutdown();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
+    public void shutdown() {
+        registrationSubscription.unsubscribe();
+        server.shutdown();
     }
 
-    public void stop() {
-        client.unregister(createInstanceInfo(server.getServerPort())).doOnError(Throwable::printStackTrace).subscribe();
-        if (null != server) {
-            try {
-                server.shutdown();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
-    }
-
-    protected abstract Observable<Void> handleRequest(HttpServerRequest<?> request, HttpServerResponse<ServerSentEvent> response);
+    protected abstract Observable<Void> handleRequest(HttpServerRequest<?> request, HttpServerResponse<ByteBuf> response);
 
     protected InstanceInfo createInstanceInfo(int port) {
-        final HashSet<ServicePort> ports = new HashSet<>(Arrays.asList(new ServicePort(port, false)));
+        final HashSet<ServicePort> ports = new HashSet<>(Collections.singletonList(new ServicePort(port, false)));
 
-        String hostAddress = "unknown";
+        String hostAddress;
         try {
             hostAddress = InetAddress.getLocalHost().getHostAddress();
         } catch (UnknownHostException e) {
@@ -119,9 +109,9 @@ public abstract class AbstractMiddleTierService {
     }
 
     protected static Observable<Void> writeError(HttpServerRequest<?> request, HttpServerResponse<?> response, String message) {
-        System.err.println("Server => Error [" + request.getPath() + "] => " + message);
+        System.err.println("Server => Error [" + request.getUri() + "] => " + message);
         response.setStatus(HttpResponseStatus.BAD_REQUEST);
-        return response.writeStringAndFlush("Error 500: " + message + "\n");
+        return response.writeString(Observable.just("Error 500: " + message + "\n"));
     }
 
     protected static int getParameter(HttpServerRequest<?> request, String key, int defaultValue) {

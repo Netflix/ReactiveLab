@@ -1,13 +1,11 @@
 package io.reactivex.lab.tutorial;
 
 import io.netty.buffer.ByteBuf;
-import io.reactivex.netty.RxNetty;
-import io.reactivex.netty.protocol.http.client.HttpClientRequest;
+import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.server.HttpServer;
 import rx.Observable;
 
 import java.nio.charset.Charset;
-import java.util.Map;
 
 /**
  * This example starts a simple HTTP server and client to demonstrate how to use RxNetty HTTP protocol.
@@ -39,20 +37,15 @@ public class ClientServer {
         /**
          * Creates an HTTP server which returns "Hello World!" responses.
          */
-        return RxNetty.createHttpServer(port,
-                                        /*
-                                         * HTTP Request handler for RxNetty where you control what you write as the
-                                         * response for each and every request the server receives.
-                                         */
-                                        (request, response) -> {
-                                            /**
-                                             * In a real server, you would be writing different responses based on the
-                                             * URI of the request.
-                                             * This example just returns a "Hello World!!" string unconditionally.
-                                             */
-                                            return response.writeStringAndFlush("Hello World!!");
-                                        })
-                      .start();
+        return HttpServer.newServer(port)
+                         .start((request, response) -> {
+                             /**
+                              * In a real server, you would be writing different responses based on the
+                              * URI of the request.
+                              * This example just returns a "Hello World!!" string unconditionally.
+                              */
+                             return response.writeString(Observable.just("Hello World!!"));
+                         });
     }
 
     public static Observable<String> createRequest(String host, int port) {
@@ -60,26 +53,15 @@ public class ClientServer {
         /**
          * Creates an HTTP client bound to the provided host and port.
          */
-        return RxNetty.createHttpClient(host, port)
+        return HttpClient.newClient(host, port)
                 /* Submit an HTTP GET request with uri "/hello" */
-                .submit(HttpClientRequest.createGet("/hello"))
+                .createGet("/hello")
                 /* Print the HTTP initial line and headers. Return the content.*/
                 .flatMap(response -> {
                     /**
-                     * Printing the HTTP initial line.
+                     * Printing the HTTP headers.
                      */
-                    System.out.println(response.getHttpVersion().text() + ' ' + response.getStatus().code()
-                                       + ' ' + response.getStatus().reasonPhrase());
-                    /**
-                     * Printing HTTP headers.
-                     */
-                    for (Map.Entry<String, String> header : response.getHeaders().entries()) {
-                        System.out.println(header.getKey() + ": " + header.getValue());
-                    }
-
-                    // Line break after the headers.
-                    System.out.println();
-
+                    System.out.println(response);
                     return response.getContent();
                 })
                 /* Convert the ByteBuf for each content chunk into a string. */

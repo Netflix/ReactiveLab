@@ -120,7 +120,7 @@ public class ResponseBuilder {
         System.out.println("response headers");
         Map<String, String> perfResponseHeaders = getPerfResponseHeaders(startTime);
         for (Map.Entry<String, String> entry : perfResponseHeaders.entrySet()) {
-            response.getHeaders().add(entry.getKey(), entry.getValue());
+            response.addHeader(entry.getKey(), entry.getValue());
         }
     }
 

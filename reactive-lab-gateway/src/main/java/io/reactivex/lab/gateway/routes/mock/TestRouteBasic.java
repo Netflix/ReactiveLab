@@ -4,16 +4,13 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufInputStream;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.reactivex.lab.gateway.common.RxNettyResponseWriter;
-import io.reactivex.netty.RxNetty;
-import io.reactivex.netty.protocol.http.client.HttpClientRequest;
-import io.reactivex.netty.protocol.http.client.HttpClientResponse;
+import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.server.HttpServerRequest;
 import io.reactivex.netty.protocol.http.server.HttpServerResponse;
+import rx.Observable;
 
 import java.util.Arrays;
 import java.util.List;
-
-import rx.Observable;
 
 /**
  * Handle request and return a response that composes multiple backend services like this:
@@ -34,7 +31,7 @@ public class TestRouteBasic {
         long id = Long.parseLong(String.valueOf(_id.get(0)));
 
         // set response header
-        response.getHeaders().addHeader("content-type", "application/json");
+        response.addHeader("content-type", "application/json");
 
         Observable<List<BackendResponse>> acd = getDataFromBackend("/mock.json?numItems=2&itemSize=50&delay=50&id=" + id)
                 // Eclipse 20140224-0627 can't infer without this type hint even though the Java 8 compiler can
@@ -65,23 +62,19 @@ public class TestRouteBasic {
             RxNettyResponseWriter writer = new RxNettyResponseWriter(response);
             ResponseBuilder.writeTestResponse(writer, responseA, responseB, responseC, responseD, responseE);
             return writer;
-        }).flatMap(w -> w.asObservable());
+        }).flatMap(RxNettyResponseWriter::asObservable);
     }
 
     private static Observable<BackendResponse> getDataFromBackend(String url) {
-        return RxNetty.createHttpClient("localhost", 9100)
-                .submit(HttpClientRequest.createGet(url))
-                .flatMap((HttpClientResponse<ByteBuf> r) -> {
-                    Observable<BackendResponse> bytesToJson = r.getContent().map(b -> {
-                        return BackendResponse.fromJson(new ByteBufInputStream(b));
-                    });
-                    return bytesToJson;
-                });
+        return HttpClient.newClient("localhost", 9100)
+                .createGet(url)
+                .flatMap(response -> response.getContent()
+                                             .map(b -> BackendResponse.fromJson(new ByteBufInputStream(b))));
     }
 
     private static Observable<Void> writeError(HttpServerRequest<?> request, HttpServerResponse<?> response, String message) {
-        System.err.println("Server => Error [" + request.getPath() + "] => " + message);
+        System.err.println("Server => Error [" + request.getUri() + "] => " + message);
         response.setStatus(HttpResponseStatus.BAD_REQUEST);
-        return response.writeStringAndFlush("Error 500: " + message + "\n");
+        return response.writeString(Observable.just("Error 500: " + message + "\n"));
     }
 }

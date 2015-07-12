@@ -2,19 +2,16 @@ package io.reactivex.lab.gateway.clients;
 
 import com.netflix.hystrix.HystrixCommandGroupKey;
 import com.netflix.hystrix.HystrixObservableCommand;
-
 import io.netty.buffer.ByteBuf;
 import io.reactivex.lab.gateway.clients.PersonalizedCatalogCommand.Catalog;
 import io.reactivex.lab.gateway.clients.UserCommand.User;
 import io.reactivex.lab.gateway.common.SimpleJson;
-import io.reactivex.lab.gateway.loadbalancer.DiscoveryAndLoadBalancer;
-import io.reactivex.netty.protocol.http.client.HttpClientRequest;
+import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.sse.ServerSentEvent;
-import netflix.ocelli.LoadBalancer;
-import netflix.ocelli.rxnetty.HttpClientHolder;
 import rx.Observable;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,28 +19,23 @@ import java.util.Map;
 public class PersonalizedCatalogCommand extends HystrixObservableCommand<Catalog> {
 
     private final List<User> users;
-    private static final LoadBalancer<HttpClientHolder<ByteBuf, ServerSentEvent>> loadBalancer =
-            DiscoveryAndLoadBalancer.getFactory().forVip("reactive-lab-personalized-catalog-service");
+    private final HttpClient<ByteBuf, ByteBuf> client;
 
-    public PersonalizedCatalogCommand(User user) {
-        this(Arrays.asList(user));
-        // replace with HystrixCollapser
+    public PersonalizedCatalogCommand(User user, ClientRegistry clientRegistry) {
+        this(Collections.singletonList(user), clientRegistry);
     }
 
-    public PersonalizedCatalogCommand(List<User> users) {
+    public PersonalizedCatalogCommand(List<User> users, ClientRegistry clientRegistry) {
         super(HystrixCommandGroupKey.Factory.asKey("PersonalizedCatalog"));
         this.users = users;
+        client = clientRegistry.getPersonalizedCatalogServiceClient();
     }
 
     @Override
     protected Observable<Catalog> construct() {
-        HttpClientRequest<ByteBuf> request = HttpClientRequest.createGet("/catalog?" + UrlGenerator.generate("userId", users));
-        return loadBalancer.choose()
-                           .map(holder -> holder.getClient())
-                           .<Catalog>flatMap(client -> client.submit(request)
-                                                    .flatMap(r -> r.getContent()
-                                                                   .map((ServerSentEvent sse) -> Catalog.fromJson(sse.contentAsString()))))
-                           .retry(1);
+        return client.createGet("/catalog?" + UrlGenerator.generate("userId", users))
+                     .retryWhen(new RetryWhenNoServersAvailable())
+                     .flatMap(resp -> resp.getContentAsServerSentEvents().map(Catalog::fromSse));
     }
     
     @Override
@@ -81,10 +73,11 @@ public class PersonalizedCatalogCommand extends HystrixObservableCommand<Catalog
             }
         }
 
-        public static Catalog fromJson(String json) {
+        public static Catalog fromSse(ServerSentEvent serverSentEvent) {
+            String json = serverSentEvent.contentAsString();
+            serverSentEvent.release(); // Release ByteBuf as this is terminally consuming the buffer.
             return new Catalog(SimpleJson.jsonToMap(json));
         }
-
     }
 
     public static class Video implements ID {

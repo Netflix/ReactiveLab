@@ -1,31 +1,24 @@
 package io.reactivex.lab.gateway.clients;
 
-import io.netty.buffer.ByteBuf;
+import com.netflix.hystrix.HystrixCollapser.CollapsedRequest;
+import com.netflix.hystrix.HystrixObservableCollapser;
+import com.netflix.hystrix.HystrixObservableCommand;
 import io.reactivex.lab.gateway.clients.BookmarksCommand.Bookmark;
 import io.reactivex.lab.gateway.clients.PersonalizedCatalogCommand.Video;
-import io.reactivex.lab.gateway.loadbalancer.DiscoveryAndLoadBalancer;
-import io.reactivex.netty.protocol.http.sse.ServerSentEvent;
+import rx.functions.Func1;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
-import netflix.ocelli.LoadBalancer;
-import netflix.ocelli.rxnetty.HttpClientHolder;
-import rx.functions.Func1;
-
-import com.netflix.hystrix.HystrixCollapser.CollapsedRequest;
-import com.netflix.hystrix.HystrixObservableCollapser;
-import com.netflix.hystrix.HystrixObservableCommand;
-
 public class BookmarkCommand extends HystrixObservableCollapser<Integer, Bookmark, Bookmark, Video> {
 
     private final Video video;
-    private static final LoadBalancer<HttpClientHolder<ByteBuf, ServerSentEvent>> loadBalancer =
-            DiscoveryAndLoadBalancer.getFactory().forVip("reactive-lab-bookmark-service");
+    private final ClientRegistry clientRegistry;
 
-    public BookmarkCommand(Video video) {
+    public BookmarkCommand(Video video, ClientRegistry clientRegistry) {
         this.video = video;
+        this.clientRegistry = clientRegistry;
     }
 
     @Override
@@ -39,7 +32,7 @@ public class BookmarkCommand extends HystrixObservableCollapser<Integer, Bookmar
         for (CollapsedRequest<Bookmark, Video> r : requests) {
             videos.add(r.getArgument());
         }
-        return new BookmarksCommand(videos, loadBalancer);
+        return new BookmarksCommand(videos, clientRegistry);
     }
 
     protected void onMissingResponse(CollapsedRequest<Bookmark, Video> r) {

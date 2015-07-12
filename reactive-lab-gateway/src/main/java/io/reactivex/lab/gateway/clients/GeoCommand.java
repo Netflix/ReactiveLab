@@ -5,11 +5,8 @@ import com.netflix.hystrix.HystrixObservableCommand;
 import io.netty.buffer.ByteBuf;
 import io.reactivex.lab.gateway.clients.GeoCommand.GeoIP;
 import io.reactivex.lab.gateway.common.SimpleJson;
-import io.reactivex.lab.gateway.loadbalancer.DiscoveryAndLoadBalancer;
-import io.reactivex.netty.protocol.http.client.HttpClientRequest;
+import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.sse.ServerSentEvent;
-import netflix.ocelli.LoadBalancer;
-import netflix.ocelli.rxnetty.HttpClientHolder;
 import rx.Observable;
 
 import java.util.List;
@@ -18,23 +15,19 @@ import java.util.Map;
 public class GeoCommand extends HystrixObservableCommand<GeoIP> {
 
     private final List<String> ips;
-    private static final LoadBalancer<HttpClientHolder<ByteBuf, ServerSentEvent>> loadBalancer =
-            DiscoveryAndLoadBalancer.getFactory().forVip("reactive-lab-geo-service");
+    private final HttpClient<ByteBuf, ByteBuf> client;
 
-    public GeoCommand(List<String> ips) {
+    public GeoCommand(List<String> ips, ClientRegistry clientRegistry) {
         super(HystrixCommandGroupKey.Factory.asKey("GeoIP"));
         this.ips = ips;
+        client = clientRegistry.getGeoServiceClient();
     }
 
     @Override
     protected Observable<GeoIP> construct() {
-        HttpClientRequest<ByteBuf> request = HttpClientRequest.createGet("/geo?" + UrlGenerator.generate("ip", ips));
-        return loadBalancer.choose()
-                           .map(holder -> holder.getClient())
-                           .<GeoIP>flatMap(client -> client.submit(request)
-                                                    .flatMap(r -> r.getContent()
-                                                                   .map((ServerSentEvent sse) -> GeoIP.fromJson(sse.contentAsString()))))
-                           .retry(1);
+        return client.createGet("/geo?" + UrlGenerator.generate("ip", ips))
+                     .retryWhen(new RetryWhenNoServersAvailable())
+                     .flatMap(resp -> resp.getContentAsServerSentEvents().map(GeoIP::fromSse));
     }
 
     public static class GeoIP {
@@ -45,9 +38,14 @@ public class GeoCommand extends HystrixObservableCommand<GeoIP> {
             this.data = data;
         }
 
-        public static GeoIP fromJson(String json) {
-            return new GeoIP(SimpleJson.jsonToMap(json));
+        public Map<String, Object> getData() {
+            return data;
         }
 
+        public static GeoIP fromSse(ServerSentEvent serverSentEvent) {
+            String json = serverSentEvent.contentAsString();
+            serverSentEvent.release(); // Release ByteBuf as this is terminally consuming the buffer.
+            return new GeoIP(SimpleJson.jsonToMap(json));
+        }
     }
 }

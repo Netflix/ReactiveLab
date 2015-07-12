@@ -1,27 +1,27 @@
 package io.reactivex.lab.tutorial;
 
-import com.netflix.eureka2.client.EurekaClient;
+import com.netflix.eureka2.client.EurekaInterestClient;
+import com.netflix.eureka2.client.EurekaRegistrationClient;
 import com.netflix.eureka2.interests.Interests;
-import com.netflix.eureka2.registry.NetworkAddress;
-import com.netflix.eureka2.registry.ServicePort;
+import com.netflix.eureka2.registry.instance.NetworkAddress;
+import com.netflix.eureka2.registry.instance.ServicePort;
 import io.netty.buffer.ByteBuf;
-import io.reactivex.netty.RxNetty;
 import io.reactivex.netty.protocol.http.client.HttpClient;
-import io.reactivex.netty.protocol.http.client.HttpClientRequest;
-import io.reactivex.netty.protocol.http.client.HttpClientResponse;
 import io.reactivex.netty.protocol.http.server.HttpServer;
-import netflix.ocelli.Host;
-import netflix.ocelli.LoadBalancer;
-import netflix.ocelli.LoadBalancers;
-import netflix.ocelli.MembershipEvent;
-import netflix.ocelli.eureka.EurekaMembershipSource;
+import netflix.ocelli.Instance;
+import netflix.ocelli.eureka2.Eureka2InterestManager;
+import netflix.ocelli.rxnetty.protocol.http.HttpLoadBalancer;
 import rx.Observable;
-import rx.functions.Func1;
 
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.charset.Charset;
 import java.util.HashSet;
-import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+
+import static io.reactivex.lab.tutorial.ClientServerWithDiscovery.*;
 
 /**
  * This example builds over the {@link ClientServerWithDiscovery} example by adding the load balancer Ocelli.
@@ -34,19 +34,20 @@ public class ClientServerWithLoadBalancer {
 
     public static void main(String[] args) throws Exception {
 
-        final int eurekaReadServerPort = 7007;
-        final int eurekaWriteServerPort = 7008;
+        final int eurekaReadServerPort = 7005;
+        final int eurekaWriteServerPort = 7006;
 
         /**
          * Starts an embedded eureka server with the defined read and write ports.
          */
-        ClientServerWithDiscovery.startEurekaServer(eurekaReadServerPort, eurekaWriteServerPort);
+        // TODO: Till Eureka2 moves to RxNetty 0.5.X, we can embedd eureka write server
+        //ClientServerWithDiscovery.startEurekaServer(eurekaReadServerPort, eurekaWriteServerPort);
 
         /**
          * Create eureka client with the same read and write ports for the embedded eureka server.
          */
-        EurekaClient eurekaClient = ClientServerWithDiscovery.createEurekaClient(eurekaReadServerPort,
-                                                                                 eurekaWriteServerPort);
+        EurekaRegistrationClient eurekaRegistrationClient = createEurekaRegistrationClient(eurekaWriteServerPort);
+        EurekaInterestClient eurekaInterestClient = createEurekaInterestClient(eurekaReadServerPort);
 
         /**
          * Reuse {@link ClientServer} example to start an RxNetty server on the passed port.
@@ -59,13 +60,14 @@ public class ClientServerWithLoadBalancer {
          * interchangeably.
          */
         String vipAddress = "mock_server-" + server.getServerPort();
-        ClientServerWithDiscovery.registerWithEureka(server.getServerPort(), eurekaClient, vipAddress);
+        ClientServerWithDiscovery.registerWithEureka(server.getServerPort(), eurekaRegistrationClient, vipAddress);
 
         /**
          * Using the eureka client, create an Ocelli Host event stream.
          * Ocelli, uses this host stream to know about the available hosts.
          */
-        Observable<MembershipEvent<Host>> eurekaHostSource = createEurekaHostStream(eurekaClient, vipAddress);
+        Observable<Instance<SocketAddress>> eurekaHostSource = createEurekaHostStream(eurekaInterestClient,
+                                                                                      vipAddress);
 
         /**
          * Instead of directly using the host and port from eureka as in example {@link ClientServerWithDiscovery},
@@ -81,71 +83,34 @@ public class ClientServerWithLoadBalancer {
                 .forEach(System.out::println);
     }
 
-    public static Observable<String> createRequestFromLB(Observable<MembershipEvent<Host>> eurekaHostSource) {
+    public static Observable<String> createRequestFromLB(Observable<Instance<SocketAddress>> eurekaHostSource) {
 
-        /**
-         * Create a LoadBalancer instance from eureka's host stream.
-         */
-        return LoadBalancers.fromHostSource(
-                /**
-                 * Map over the host event and create a RxNetty HTTP client.
-                 * This enable Ocelli to directly manage the client instance and hence reduce a map lookup to get a
-                 * client instance for a host for every request processing.
-                 * If you prefer Ocelli to manage the host instances, that is possible too by omitting this map function
-                 * and transforming the retrieved host via {@link LoadBalancer#choose()} to a client of
-                 * your choice.
-                 */
-                eurekaHostSource.map(
-                        hostEvent -> {
-                            Host host = hostEvent.getClient();
-                            /**
-                             * Typically, you will use a pool of clients, so that for the same host, you do not end up creating a
-                             * new client instance.
-                             * This example creates a new client to reduce verbosity.
-                             */
-                            HttpClient<ByteBuf, ByteBuf> client = RxNetty.createHttpClient(host.getHostName(),
-                                                                                           host.getPort());
+        return HttpClient.newClient(HttpLoadBalancer.<ByteBuf, ByteBuf>roundRobin(eurekaHostSource).toConnectionProvider())
+                /* Submit an HTTP GET request with uri "/hello" */
+                .createGet("/hello")
+                .retryWhen(errStream -> errStream.flatMap(err -> {
+                    if (err instanceof NoSuchElementException) {
+                        System.out.println("No hosts available, retrying after 10 seconds.");
+                        return Observable.timer(10, TimeUnit.SECONDS);
+                    }
+                    return Observable.error(err);
+                }))
+                /* Print the HTTP initial line and headers. Return the content.*/
+                .flatMap(response -> {
+                    /**
+                     * Printing the HTTP headers.
+                     */
+                    System.out.println(response);
+                    return response.getContent();
+                })
+                /* Convert the ByteBuf for each content chunk into a string. */
+                .map(byteBuf -> byteBuf.toString(Charset.defaultCharset()));
+   }
 
-                            /**
-                             * Since, Ocelli expects a {@link netflix.ocelli.MembershipEvent} instance, wrap the client
-                             * into that event.
-                             */
-                            return new MembershipEvent<>(hostEvent.getType(), client);
-                        }))
-                .choose() /* Chooses the best possible host for the next request*/
-                /**
-                 * Submit the request to the returned client.
-                 */
-                .flatMap(client ->
-                                 client.submit(HttpClientRequest.createGet("/"))
-                                         /* Print the HTTP initial line and headers. Return the content.*/
-                                         .flatMap((Func1<HttpClientResponse<ByteBuf>, Observable<ByteBuf>>) response -> {
-                                                     /**
-                                                      * Printing the HTTP initial line.
-                                                      */
-                                                     System.out.println( response.getHttpVersion().text() + ' '
-                                                                         + response.getStatus().code() + ' '
-                                                                         + response .getStatus().reasonPhrase());
-                                                     /**
-                                                      * Printing HTTP headers.
-                                                      */
-                                                     for (Map.Entry<String, String> header : response.getHeaders().entries()) {
-                                                         System.out.println(header.getKey() + ": " + header.getValue());
-                                                     }
+    public static Observable<Instance<SocketAddress>> createEurekaHostStream(EurekaInterestClient eurekaClient,
+                                                                             String vipAddress) {
 
-                                                     // Line break after the headers.
-                                                     System.out.println();
-
-                                                     return response.getContent();
-                                                 })
-                                         /* Convert the ByteBuf for each content chunk into a string. */
-                                         .map(byteBuf -> byteBuf.toString(Charset.defaultCharset())));
-    }
-
-    public static Observable<MembershipEvent<Host>> createEurekaHostStream(EurekaClient eurekaClient,
-                                                                           String vipAddress) {
-
-        EurekaMembershipSource membershipSource = new EurekaMembershipSource(eurekaClient);
+        Eureka2InterestManager eureka2InterestManager = new Eureka2InterestManager(eurekaClient);
 
         /**
          * Eureka client caches data streams from the server to decouple users from blips in connection between client
@@ -158,7 +123,7 @@ public class ClientServerWithLoadBalancer {
          */
         eurekaClient.forInterest(Interests.forFullRegistry()).take(1).toBlocking().first();// Warm up eureka data
 
-        return membershipSource.forInterest(Interests.forVips(vipAddress), instanceInfo -> {
+        return eureka2InterestManager.forInterest(Interests.forVips(vipAddress), instanceInfo -> {
             /**
              * Filtering out all non-IPv4 addresses.
              */
@@ -168,7 +133,7 @@ public class ClientServerWithLoadBalancer {
                                            .collect(Collectors.toList()).get(0).getIpAddress();
             HashSet<ServicePort> servicePorts = instanceInfo.getPorts();
             ServicePort portToUse = servicePorts.iterator().next();
-            return new Host(ipAddress, portToUse.getPort());
+            return new InetSocketAddress(ipAddress, portToUse.getPort());
         });
     }
 }

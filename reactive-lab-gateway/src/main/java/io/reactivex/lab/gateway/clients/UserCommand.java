@@ -2,15 +2,11 @@ package io.reactivex.lab.gateway.clients;
 
 import com.netflix.hystrix.HystrixCommandGroupKey;
 import com.netflix.hystrix.HystrixObservableCommand;
-
 import io.netty.buffer.ByteBuf;
 import io.reactivex.lab.gateway.clients.UserCommand.User;
 import io.reactivex.lab.gateway.common.SimpleJson;
-import io.reactivex.lab.gateway.loadbalancer.DiscoveryAndLoadBalancer;
-import io.reactivex.netty.protocol.http.client.HttpClientRequest;
+import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.sse.ServerSentEvent;
-import netflix.ocelli.LoadBalancer;
-import netflix.ocelli.rxnetty.HttpClientHolder;
 import rx.Observable;
 
 import java.util.HashMap;
@@ -20,25 +16,20 @@ import java.util.Map;
 public class UserCommand extends HystrixObservableCommand<User> {
 
     private final List<String> userIds;
-    private static final LoadBalancer<HttpClientHolder<ByteBuf, ServerSentEvent>> loadBalancer =
-            DiscoveryAndLoadBalancer.getFactory().forVip("reactive-lab-user-service");
+    private final HttpClient<ByteBuf, ByteBuf> client;
 
-    public UserCommand(List<String> userIds) {
+    public UserCommand(List<String> userIds, ClientRegistry clientRegistry) {
         super(HystrixCommandGroupKey.Factory.asKey("User"));
         this.userIds = userIds;
+        client = clientRegistry.getUserServiceClient();
     }
 
     @Override
     protected Observable<User> construct() {
-        HttpClientRequest<ByteBuf> request = HttpClientRequest.createGet("/user?" + UrlGenerator.generate("userId", userIds));
-        return loadBalancer.choose().map(holder -> holder.getClient())
-                .<User>flatMap(client -> client.submit(request)
-                                         .flatMap(r -> r.getContent().map(
-                                                 (ServerSentEvent sse) -> {
-                                                     String user = sse.contentAsString();
-                                                     return User.fromJson(user);
-                                                 })))
-                .retry(1);
+
+        return client.createGet("/user?" + UrlGenerator.generate("userId", userIds))
+                     .retryWhen(new RetryWhenNoServersAvailable())
+                     .flatMap(resp -> resp.getContentAsServerSentEvents().map(User::fromSse));
     }
     
     @Override
@@ -48,8 +39,7 @@ public class UserCommand extends HystrixObservableCommand<User> {
             fallback.put("userId", id);
             fallback.put("name", "Fallback Name Here");
             fallback.put("other_data", "goes_here");
-            User u = new User(fallback);
-            return u;
+            return new User(fallback);
         });
     }
 
@@ -60,13 +50,15 @@ public class UserCommand extends HystrixObservableCommand<User> {
             this.data = jsonToMap;
         }
 
-        public static User fromJson(String json) {
+        public static User fromSse(ServerSentEvent serverSentEvent) {
+            String json = serverSentEvent.contentAsString();
+            serverSentEvent.release(); // Release ByteBuf as this is terminally consuming the buffer.
             Map<String, Object> data = SimpleJson.jsonToMap(json);
             if (!data.containsKey("userId")) {
                 throw new IllegalArgumentException("A User object requires a 'userId'");
             } else {
                 try {
-                    int id = Integer.parseInt(String.valueOf(data.get("userId")));
+                    Integer.parseInt(String.valueOf(data.get("userId")));
                 } catch (Exception e) {
                     throw new IllegalArgumentException("The `userId` must be an Integer");
                 }

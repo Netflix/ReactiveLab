@@ -2,19 +2,14 @@ package io.reactivex.lab.gateway.clients;
 
 import com.netflix.hystrix.HystrixCommandGroupKey;
 import com.netflix.hystrix.HystrixObservableCommand;
-
 import io.netty.buffer.ByteBuf;
 import io.reactivex.lab.gateway.clients.SocialCommand.Social;
 import io.reactivex.lab.gateway.clients.UserCommand.User;
 import io.reactivex.lab.gateway.common.SimpleJson;
-import io.reactivex.lab.gateway.loadbalancer.DiscoveryAndLoadBalancer;
-import io.reactivex.netty.protocol.http.client.HttpClientRequest;
+import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.sse.ServerSentEvent;
-import netflix.ocelli.LoadBalancer;
-import netflix.ocelli.rxnetty.HttpClientHolder;
 import rx.Observable;
 
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -23,29 +18,25 @@ import java.util.Map;
 public class SocialCommand extends HystrixObservableCommand<Social> {
 
     private final List<User> users;
-    private static final LoadBalancer<HttpClientHolder<ByteBuf, ServerSentEvent>> loadBalancer =
-            DiscoveryAndLoadBalancer.getFactory().forVip("reactive-lab-social-service");
+    private final HttpClient<ByteBuf, ByteBuf> client;
 
-    public SocialCommand(User user) {
-        this(Arrays.asList(user));
+    public SocialCommand(User user, ClientRegistry clientRegistry) {
+        this(Collections.singletonList(user), clientRegistry);
         // replace with HystrixCollapser
     }
 
-    public SocialCommand(List<User> users) {
+    public SocialCommand(List<User> users, ClientRegistry clientRegistry) {
         super(HystrixCommandGroupKey.Factory.asKey("Social"));
         this.users = users;
+        client = clientRegistry.getSocialServiceClient();
     }
 
     @Override
     protected Observable<Social> construct() {
-        HttpClientRequest<ByteBuf> request = HttpClientRequest.createGet("/social?" + UrlGenerator.generate("userId", users));
-        return loadBalancer.choose().map(holder -> holder.getClient())
-                .<Social>flatMap(client -> client.submit(request)
-                                         .flatMap(r -> r.getContent().map((ServerSentEvent sse) -> {
-                                             String social = sse.contentAsString();
-                                             return Social.fromJson(social);
-                                         })))
-                .retry(1);
+
+        return client.createGet("/social?" + UrlGenerator.generate("userId", users))
+                     .retryWhen(new RetryWhenNoServersAvailable())
+                     .flatMap(resp -> resp.getContentAsServerSentEvents().map(Social::fromSse));
     }
     
     @Override
@@ -73,10 +64,10 @@ public class SocialCommand extends HystrixObservableCommand<Social> {
             return data;
         }
 
-        public static Social fromJson(String json) {
+        public static Social fromSse(ServerSentEvent serverSentEvent) {
+            String json = serverSentEvent.contentAsString();
+            serverSentEvent.release(); // Release ByteBuf as this is terminally consuming the buffer.
             return new Social(SimpleJson.jsonToMap(json));
         }
-
     }
-
 }
