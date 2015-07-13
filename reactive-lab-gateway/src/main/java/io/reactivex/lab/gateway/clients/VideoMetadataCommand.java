@@ -2,19 +2,15 @@ package io.reactivex.lab.gateway.clients;
 
 import com.netflix.hystrix.HystrixCommandGroupKey;
 import com.netflix.hystrix.HystrixObservableCommand;
-
 import io.netty.buffer.ByteBuf;
 import io.reactivex.lab.gateway.clients.PersonalizedCatalogCommand.Video;
 import io.reactivex.lab.gateway.clients.VideoMetadataCommand.VideoMetadata;
 import io.reactivex.lab.gateway.common.SimpleJson;
-import io.reactivex.lab.gateway.loadbalancer.DiscoveryAndLoadBalancer;
-import io.reactivex.netty.protocol.http.client.HttpClientRequest;
+import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.sse.ServerSentEvent;
-import netflix.ocelli.LoadBalancer;
-import netflix.ocelli.rxnetty.HttpClientHolder;
 import rx.Observable;
 
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,29 +18,26 @@ import java.util.Map;
 public class VideoMetadataCommand extends HystrixObservableCommand<VideoMetadata> {
 
     private final List<Video> videos;
-    private static final LoadBalancer<HttpClientHolder<ByteBuf, ServerSentEvent>> loadBalancer =
-            DiscoveryAndLoadBalancer.getFactory().forVip("reactive-lab-vms-service");
+    private final HttpClient<ByteBuf, ByteBuf> client;
 
-    public VideoMetadataCommand(Video video) {
-        this(Arrays.asList(video));
+    public VideoMetadataCommand(Video video, ClientRegistry clientRegistry) {
+        this(Collections.singletonList(video), clientRegistry);
         // replace with HystrixCollapser
     }
 
-    public VideoMetadataCommand(List<Video> videos) {
+    public VideoMetadataCommand(List<Video> videos, ClientRegistry clientRegistry) {
         super(HystrixCommandGroupKey.Factory.asKey("VideoMetadata"));
         this.videos = videos;
+        client = clientRegistry.getVideoMetadataServiceClient();
     }
 
     @Override
     protected Observable<VideoMetadata> construct() {
-        HttpClientRequest<ByteBuf> request = HttpClientRequest.createGet("/metadata?" + UrlGenerator.generate("videoId",
-                                                                                                              videos));
-        return loadBalancer.choose()
-                           .map(holder -> holder.getClient())
-                           .<VideoMetadata>flatMap(client -> client.submit(request)
-                                                    .flatMap(r -> r.getContent()
-                                                                   .map((ServerSentEvent sse) -> VideoMetadata.fromJson(sse.contentAsString()))))
-                           .retry(1);
+
+        return client.createGet("/metadata?" + UrlGenerator.generate("videoId",
+                                                                     videos))
+                     .retryWhen(new RetryWhenNoServersAvailable())
+                     .flatMap(resp -> resp.getContentAsServerSentEvents().map(VideoMetadata::fromSse));
     }
     
     @Override
@@ -64,7 +57,9 @@ public class VideoMetadataCommand extends HystrixObservableCommand<VideoMetadata
             this.data = data;
         }
 
-        public static VideoMetadata fromJson(String json) {
+        public static VideoMetadata fromSse(ServerSentEvent serverSentEvent) {
+            String json = serverSentEvent.contentAsString();
+            serverSentEvent.release(); // Release ByteBuf as this is terminally consuming the buffer.
             return new VideoMetadata(SimpleJson.jsonToMap(json));
         }
 

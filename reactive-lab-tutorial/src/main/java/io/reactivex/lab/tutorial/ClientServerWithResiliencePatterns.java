@@ -1,15 +1,19 @@
 package io.reactivex.lab.tutorial;
 
-import com.netflix.eureka2.client.EurekaClient;
+import com.netflix.eureka2.client.EurekaInterestClient;
+import com.netflix.eureka2.client.EurekaRegistrationClient;
 import com.netflix.hystrix.HystrixCommandGroupKey;
 import com.netflix.hystrix.HystrixObservableCommand;
 import io.netty.buffer.ByteBuf;
 import io.reactivex.netty.protocol.http.server.HttpServer;
-import netflix.ocelli.Host;
-import netflix.ocelli.MembershipEvent;
+import netflix.ocelli.Instance;
 import rx.Observable;
 
+import java.net.SocketAddress;
 import java.util.concurrent.TimeUnit;
+
+import static io.reactivex.lab.tutorial.ClientServerWithDiscovery.*;
+import static io.reactivex.lab.tutorial.ClientServerWithLoadBalancer.*;
 
 /**
  * This example builds over the {@link ClientServerWithLoadBalancer} example by adding hystrix.
@@ -22,19 +26,20 @@ public class ClientServerWithResiliencePatterns {
 
     public static void main(String[] args) throws Exception {
 
-        final int eurekaReadServerPort = 7008;
-        final int eurekaWriteServerPort = 7010;
+        final int eurekaReadServerPort = 7005;
+        final int eurekaWriteServerPort = 7006;
 
         /**
          * Starts an embedded eureka server with the defined read and write ports.
          */
-        ClientServerWithDiscovery.startEurekaServer(eurekaReadServerPort, eurekaWriteServerPort);
+        // TODO: Till Eureka2 moves to RxNetty 0.5.X, we can embedd eureka write server
+        //ClientServerWithDiscovery.startEurekaServer(eurekaReadServerPort, eurekaWriteServerPort);
 
         /**
          * Create eureka client with the same read and write ports for the embedded eureka server.
          */
-        EurekaClient eurekaClient = ClientServerWithDiscovery.createEurekaClient(eurekaReadServerPort,
-                                                                                 eurekaWriteServerPort);
+        EurekaRegistrationClient eurekaRegistrationClient = createEurekaRegistrationClient(eurekaWriteServerPort);
+        EurekaInterestClient eurekaInterestClient = createEurekaInterestClient(eurekaReadServerPort);
 
         /**
          * Reuse {@link ClientServer} example to start an RxNetty server on the passed port.
@@ -47,14 +52,13 @@ public class ClientServerWithResiliencePatterns {
          * interchangeably.
          */
         String vipAddress = "mock_server-" + server.getServerPort();
-        ClientServerWithDiscovery.registerWithEureka(server.getServerPort(), eurekaClient, vipAddress);
+        ClientServerWithDiscovery.registerWithEureka(server.getServerPort(), eurekaRegistrationClient, vipAddress);
 
         /**
          * Using the eureka client, create an Ocelli Host event stream.
          * Ocelli, uses this host stream to know about the available hosts.
          */
-        Observable<MembershipEvent<Host>> eurekaHostSource = ClientServerWithLoadBalancer.createEurekaHostStream(
-                eurekaClient, vipAddress);
+        Observable<Instance<SocketAddress>> eurekaHostSource = createEurekaHostStream(eurekaInterestClient, vipAddress);
 
         MyCommand myCommand = new MyCommand(eurekaHostSource);
 
@@ -74,9 +78,9 @@ public class ClientServerWithResiliencePatterns {
 
     public static class MyCommand extends HystrixObservableCommand<String> {
 
-        private final Observable<MembershipEvent<Host>> eurekaHostSource;
+        private final Observable<Instance<SocketAddress>> eurekaHostSource;
 
-        public MyCommand(Observable<MembershipEvent<Host>> eurekaHostSource) {
+        public MyCommand(Observable<Instance<SocketAddress>> eurekaHostSource) {
             super(HystrixCommandGroupKey.Factory.asKey("MyCommand"));
             this.eurekaHostSource = eurekaHostSource;
         }

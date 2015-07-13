@@ -11,6 +11,8 @@ import java.nio.charset.Charset;
 import rx.Observable;
 import rx.subjects.ReplaySubject;
 
+import javax.validation.constraints.NotNull;
+
 public class RxNettyResponseWriter extends Writer {
 
     private final HttpServerResponse<ByteBuf> response;
@@ -30,18 +32,18 @@ public class RxNettyResponseWriter extends Writer {
             return;
         }
 
-        response.write(Unpooled.copiedBuffer(cbuf, off, len, Charset.defaultCharset()));
+        response.write(Observable.just(Unpooled.copiedBuffer(cbuf, off, len, Charset.defaultCharset())));
     }
 
     @Override
     public void flush() throws IOException {
-        response.flush();
+        response.unsafeNettyChannel().flush();
     }
 
     @Override
     public void close() throws IOException {
         try {
-            response.close();
+            response.dispose();
             completionObservable.onCompleted();
         } catch (Throwable e) {
             completionObservable.onError(e);

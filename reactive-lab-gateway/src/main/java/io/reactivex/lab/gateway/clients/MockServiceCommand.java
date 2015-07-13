@@ -4,6 +4,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufInputStream;
 import io.reactivex.lab.gateway.routes.mock.BackendResponse;
 import io.reactivex.netty.RxNetty;
+import io.reactivex.netty.protocol.http.client.HttpClient;
 import io.reactivex.netty.protocol.http.client.HttpClientRequest;
 import io.reactivex.netty.protocol.http.client.HttpClientResponse;
 import rx.Observable;
@@ -19,8 +20,9 @@ public class MockServiceCommand extends HystrixObservableCommand<BackendResponse
     private final int numItems;
     private final int itemSize;
     private final int delay;
+    private final HttpClient<ByteBuf, ByteBuf> client;
 
-    public MockServiceCommand(long id, int numItems, int itemSize, int delay) {
+    public MockServiceCommand(long id, int numItems, int itemSize, int delay, ClientRegistry clientRegistry) {
         super(Setter.withGroupKey(HystrixCommandGroupKey.Factory.asKey("MiddleTier"))
                 .andCommandKey(HystrixCommandKey.Factory.asKey("MiddleTier"))
                 .andCommandPropertiesDefaults(HystrixCommandProperties.Setter()
@@ -30,13 +32,16 @@ public class MockServiceCommand extends HystrixObservableCommand<BackendResponse
         this.numItems = numItems;
         this.itemSize = itemSize;
         this.delay = delay;
+        client = clientRegistry.getMockServiceClient();
     }
 
     @Override
     protected Observable<BackendResponse> construct() {
-        return RxNetty.createHttpClient("localhost", 9100)
-                .submit(HttpClientRequest.createGet("/mock.json?numItems=" + numItems + "&itemSize=" + itemSize + "&delay=" + delay + "&id=" + id))
-                .flatMap((HttpClientResponse<ByteBuf> r) -> r.getContent().map(b -> BackendResponse.fromJson(new ByteBufInputStream(b))));
+
+        return client.createGet("/mock.json?numItems=" + numItems + "&itemSize=" + itemSize + "&delay=" + delay
+                                + "&id=" + id)
+                     .retryWhen(new RetryWhenNoServersAvailable())
+                     .flatMap(resp -> resp.getContent().map(b -> BackendResponse.fromJson(new ByteBufInputStream(b))));
     }
 
     @Override

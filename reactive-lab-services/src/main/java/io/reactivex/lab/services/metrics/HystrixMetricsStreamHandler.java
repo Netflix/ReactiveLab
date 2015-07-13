@@ -1,21 +1,15 @@
 package io.reactivex.lab.services.metrics;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.UnpooledByteBufAllocator;
 import io.reactivex.netty.protocol.http.server.HttpServerRequest;
 import io.reactivex.netty.protocol.http.server.HttpServerResponse;
 import io.reactivex.netty.protocol.http.server.RequestHandler;
+import rx.Observable;
 
-import java.nio.charset.Charset;
+import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
-import rx.Observable;
-import rx.Subscription;
-import rx.functions.Action1;
-import rx.schedulers.Schedulers;
-import rx.subjects.PublishSubject;
-import rx.subjects.Subject;
-import rx.subscriptions.MultipleAssignmentSubscription;
+import static java.nio.charset.Charset.*;
 
 /**
  * Streams Hystrix metrics in Server Sent Event (SSE) format. RxNetty application handlers shall
@@ -27,23 +21,23 @@ import rx.subscriptions.MultipleAssignmentSubscription;
  * connection will not be closed on unsubscribe event and the event stream will continue to flow towards the client
  * (unless the client is shutdown).
  */
-public class HystrixMetricsStreamHandler<I, O> implements RequestHandler<I, O> {
+public class HystrixMetricsStreamHandler implements RequestHandler<ByteBuf, ByteBuf> {
 
     public static final String DEFAULT_HYSTRIX_PREFIX = "/hystrix.stream";
 
     public static final int DEFAULT_INTERVAL = 2000;
 
-    private static final byte[] HEADER = "data: ".getBytes(Charset.defaultCharset());
+    private static final byte[] HEADER = "data: ".getBytes(defaultCharset());
     private static final byte[] FOOTER = { 10, 10 };
-    private static final int EXTRA_SPACE = HEADER.length + FOOTER.length;
 
     private final String hystrixPrefix;
     private final long interval;
-    private final RequestHandler<I, O> appHandler;
+    private final RequestHandler<ByteBuf, ByteBuf> appHandler;
 
     private Metrics metrics;
 
-    public HystrixMetricsStreamHandler(Metrics metrics, String hystrixPrefix, long interval, RequestHandler<I, O> appHandler) {
+    public HystrixMetricsStreamHandler(Metrics metrics, String hystrixPrefix, long interval,
+                                       RequestHandler<ByteBuf, ByteBuf> appHandler) {
         this.metrics = metrics;
         this.hystrixPrefix = hystrixPrefix;
         this.interval = interval;
@@ -51,50 +45,28 @@ public class HystrixMetricsStreamHandler<I, O> implements RequestHandler<I, O> {
     }
 
     @Override
-    public Observable<Void> handle(HttpServerRequest<I> request, HttpServerResponse<O> response) {
-        if (request.getPath().endsWith(hystrixPrefix)) {
+    public Observable<Void> handle(HttpServerRequest<ByteBuf> request, HttpServerResponse<ByteBuf> response) {
+        if (request.getUri().endsWith(hystrixPrefix)) {
             return handleHystrixRequest(response);
         }
         return appHandler.handle(request, response);
     }
 
-    private Observable<Void> handleHystrixRequest(final HttpServerResponse<O> response) {
-        writeHeaders(response);
+    private Observable<Void> handleHystrixRequest(final HttpServerResponse<ByteBuf> response) {
 
-        final Subject<Void, Void> subject = PublishSubject.create();
-        final MultipleAssignmentSubscription subscription = new MultipleAssignmentSubscription();
-        Subscription actionSubscription = Observable.timer(0, interval, TimeUnit.MILLISECONDS, Schedulers.computation())
-                .subscribe(new Action1<Long>() {
-                    @Override
-                    public void call(Long tick) {
-                        if (!response.getChannel().isOpen()) {
-                            subscription.unsubscribe();
-                            return;
-                        }
-                        try {
-                            writeMetric(JsonMapper.toJson(metrics), response);
-                        } catch (Exception e) {
-                            subject.onError(e);
-                        }
-                    }
-                });
-        subscription.set(actionSubscription);
-        return subject;
-    }
-
-    private void writeHeaders(HttpServerResponse<O> response) {
-        response.getHeaders().add("Content-Type", "text/event-stream;charset=UTF-8");
-        response.getHeaders().add("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate");
-        response.getHeaders().add("Pragma", "no-cache");
-    }
-
-    @SuppressWarnings("unchecked")
-    private void writeMetric(String json, HttpServerResponse<O> response) {
-        byte[] bytes = json.getBytes(Charset.defaultCharset());
-        ByteBuf byteBuf = UnpooledByteBufAllocator.DEFAULT.buffer(bytes.length + EXTRA_SPACE);
-        byteBuf.writeBytes(HEADER);
-        byteBuf.writeBytes(bytes);
-        byteBuf.writeBytes(FOOTER);
-        response.writeAndFlush((O) byteBuf);
+        return response.addHeader("Content-Type", "text/event-stream;charset=UTF-8")
+                       .addHeader("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate")
+                       .addHeader("Pragma", "no-cache")
+                       .writeBytes(Observable.interval(0, interval, TimeUnit.MILLISECONDS)
+                                             .flatMap(aTick -> {
+                                                 try {
+                                                     return Observable.just(HEADER,
+                                                                            JsonMapper.toJson(metrics)
+                                                                                      .getBytes(defaultCharset()),
+                                                                            FOOTER);
+                                                 } catch (IOException e) {
+                                                     return Observable.error(e);
+                                                 }
+                                             }));
     }
 }

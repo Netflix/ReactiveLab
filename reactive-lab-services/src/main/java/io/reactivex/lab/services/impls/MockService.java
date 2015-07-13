@@ -1,8 +1,7 @@
 package io.reactivex.lab.services.impls;
 
-import com.netflix.eureka2.client.EurekaClient;
-
-import io.netty.handler.codec.http.HttpResponseStatus;
+import com.netflix.eureka2.client.EurekaRegistrationClient;
+import io.netty.buffer.ByteBuf;
 import io.reactivex.netty.protocol.http.server.HttpServerRequest;
 import io.reactivex.netty.protocol.http.server.HttpServerResponse;
 import io.reactivex.netty.protocol.http.sse.ServerSentEvent;
@@ -12,12 +11,12 @@ import java.util.List;
 
 public class MockService extends AbstractMiddleTierService {
 
-    public MockService(EurekaClient client) {
-        super("reactive-lab-mock-service", client);
+    public MockService(EurekaRegistrationClient registrationClient) {
+        super("reactive-lab-mock-service", registrationClient);
     }
 
     @Override
-    protected Observable<Void> handleRequest(HttpServerRequest<?> request, HttpServerResponse<ServerSentEvent> response) {
+    protected Observable<Void> handleRequest(HttpServerRequest<?> request, HttpServerResponse<ByteBuf> response) {
         List<String> _id = request.getQueryParameters().get("id");
         if (_id == null || _id.size() != 1) {
             return writeError(request, response, "Please provide a numerical 'id' value. It can be a random number (uuid). Received => " + _id);
@@ -43,10 +42,9 @@ public class MockService extends AbstractMiddleTierService {
             return writeError(request, response, "Please choose a 'delay' value from 0 to 60000 (60 seconds).");
         }
 
-        response.setStatus(HttpResponseStatus.OK);
-        return MockResponse.generateJson(id, delay, itemSize, numItems)
-                .flatMap(json -> response.writeStringAndFlush("data:" + json + "\n"))
-                .doOnCompleted(response::close);
+        return response.transformToServerSentEvents()
+                       .writeAndFlushOnEach(MockResponse.generateJson(id, delay, itemSize, numItems)
+                                                        .map(ServerSentEvent::withData)
+                       );
     }
-
 }
