@@ -10,7 +10,6 @@ import com.netflix.numerus.NumerusRollingNumber;
 import com.netflix.numerus.NumerusRollingNumberEvent;
 import com.netflix.numerus.NumerusRollingPercentile;
 import io.netty.buffer.ByteBuf;
-import io.netty.handler.logging.LogLevel;
 import io.reactivex.netty.protocol.http.client.HttpClient;
 import netflix.ocelli.Instance;
 import netflix.ocelli.eureka2.Eureka2InterestManager;
@@ -26,7 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static com.netflix.eureka2.registry.instance.NetworkAddress.ProtocolType.*;
-import static com.netflix.numerus.NumerusProperty.Factory.asProperty;
+import static com.netflix.numerus.NumerusProperty.Factory.*;
 import static io.reactivex.lab.gateway.clients.ClientRegistryImpl.HostMetrics.EventType.*;
 
 /**

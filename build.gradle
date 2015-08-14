@@ -17,7 +17,6 @@ allprojects {
     apply plugin: 'eclipse'
     apply plugin: 'idea'
     repositories {
-        mavenLocal()
         maven { url 'https://oss.jfrog.org/libs-snapshot' }
         mavenCentral()
 	    jcenter()
